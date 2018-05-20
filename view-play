@@ -1,0 +1,216 @@
+#!/usr/bin/python3
+
+import sys
+import urwid as ur
+from play_model import Bard
+from circular_list import CircularList
+
+class PlayReader(ur.Frame):
+
+    ### this embedded class creates a search widget
+    class Search(ur.Edit):
+        def __init__(self):
+            self.search4 = ''
+            super().__init__('Search: ', align='left', wrap='space')
+
+        def keypress(self, size, key):
+            if key == 'enter':
+                self.search4 = self.edit_text
+                self.set_edit_text('')
+                ur.emit_signal(self, 'resetfooter','body')
+
+                if self.search4.isdigit():
+                    ur.emit_signal(self, 'jump', self.search4)
+                else:
+                    ur.emit_signal(self, 'search', self.search4)
+            return super().keypress(size,key)
+
+    ## rather full
+    def __init__(self, filename):
+
+        ### Bard contains the data model
+        self.play = Bard(filename)
+        #
+        self.search = PlayReader.Search()
+        ### if you move forward from the last search result, you return to the first search result
+        ### the CircularList class provides the functionality
+        self.searchresults = CircularList([])
+
+        ### register_signal takes a class, in this case a PlayReader.Search class.
+        ### the list contains names of signals that it receives.
+        ur.register_signal(PlayReader.Search, ['resetfooter', 'search', 'jump'])
+
+        ### connect signal methods to corresponding signal names
+        ur.connect_signal(self.search, 'resetfooter', self.resetfooter)
+        ur.connect_signal(self.search, 'jump', self.jumptoline)
+        ur.connect_signal(self.search, 'search', self.searchforpattern)
+
+        ### radio buttons allow user to page through the acts of the play
+        bgroup = []
+        b1 = ur.RadioButton(bgroup, 'Act I',   on_state_change=self.show_act, user_data=0, state=True)
+        b2 = ur.RadioButton(bgroup, 'Act II',  on_state_change=self.show_act, user_data=1)
+        b3 = ur.RadioButton(bgroup, 'Act III', on_state_change=self.show_act, user_data=2)
+        b4 = ur.RadioButton(bgroup, 'Act IV',  on_state_change=self.show_act, user_data=3)
+        b5 = ur.RadioButton(bgroup, 'Act V',   on_state_change=self.show_act, user_data=4)
+
+        ### search window widget is a GridFlow
+        self.searchwin = ur.GridFlow( [ self.search ], cell_width = 80, \
+                                      h_sep = 0, v_sep = 0, align = 'left')
+        ### select act widget is also a GridFlow
+        self.selectact = ur.GridFlow( bgroup,
+                                      cell_width = 12, h_sep = 4, v_sep = 1, align = 'center')
+
+        ### body of the frame is a ListBox with SimpleFocusListWalker
+        self.body   = ur.ListBox( ur.SimpleFocusListWalker( \
+                                  self.render_content(self.play.contentbyact[0])))
+        #
+        self.header = ur.Text(('title',self.play.title), align='center')
+        #
+        self.footer = self.selectact
+
+        super().__init__(body = self.body, header = self.header, footer = self.footer)
+
+    ### formats and renders the play stored in play
+    ### returns a list of Text widgets
+    def render_content(self, play):
+        rendered = []
+        for line in play:
+            align = 'center' if line.type in ['title','stagedir'] else 'left'
+            palette = line.type
+
+            if line.type == 'line':
+                if line.num % 10 == 0:
+                    text = '{:>12} {}'.format(line.num, line.text)
+                else:
+                    text = '{:>12} {}'.format('', line.text)
+
+                if line.flag:
+                    palette = 'search'
+
+            else:
+                text = line.text
+            rendered.append(ur.Text((palette, text), align = align))
+        return rendered
+
+    def resetfooter(self, arg):       # FIX
+        self.contents['footer'] = (self.selectact, None)#(ur.BoxAdapter(ur.SolidFill('+'),height=1), None)
+        self.focus_position = 'body'
+
+    def searchforpattern(self, pat):
+        self.play.clearsearch()
+        searchresults = self.play.search(pat, err=0)
+
+        if searchresults:
+            self.searchresults = CircularList(searchresults)
+            firstresult = self.searchresults[0] # FIX CL class
+            self.contents['body'] = (ur.ListBox(ur.SimpleFocusListWalker(self.render_content(self.play))), None)
+            self.contents['body'][0].set_focus(firstresult)      # SimpleFocusListWalker
+            self.contents['body'][0].body.set_focus_valign = 'middle' # works ???
+
+    def jumptoline(self, arg):
+        contentnum = self.play.getline(int(arg)).cnum
+        self.focus_position = 'body'
+        self.contents['body'][0].body.set_focus(contentnum)
+        self.contents['body'][0].set_focus_valign('middle') # works ???
+
+    def keypress(self, size, key):
+        #if key == 'tab' and isinstance (self.focus, ur.ListBox):
+        #    self.focus_position = 'footer'
+        #elif key == 'tab' and isinstance (self.focus, ur.GridFlow):
+        #    self.focus_position = 'body'
+        if key == '/':# and isinstance (self.focus, ur.ListBox):
+            self.contents['footer'] = (self.searchwin, None)
+            self.focus_position = 'footer'
+            return key                           # clears Edit box
+        elif key == 'n' and self.searchresults:
+            self.contents['body'][0].set_focus(self.searchresults.next(), 'above')
+            self.contents['body'][0].set_focus_valign('middle')
+
+        elif key == 'p' and self.searchresults:
+            self.contents['body'][0].set_focus(self.searchresults.prev(), 'below')
+            self.contents['body'][0].set_focus_valign('middle')
+
+        return super().keypress(size,key)
+
+    def show_act(self, button, state, num):
+        if state: # fixes selection bug
+            playlines = ur.ListBox(ur.SimpleFocusListWalker(self.render_content(self.play.contentbyact[num])))
+            self.contents['body'] = (playlines, None)
+            self.focus_position = 'body'
+
+
+class PlayMenu(ur.Overlay):
+
+    @staticmethod
+    def menu(title, choices):
+        body = [ur.Padding(ur.Text(title), left = 4), ur.Divider(div_char='-')]
+        body.extend(choices)
+        return ur.ListBox(ur.SimpleFocusListWalker(body))
+
+    @staticmethod
+    def menu_button(caption, filename, callback):
+        button = ur.Button(caption)
+        ur.connect_signal(button, 'click', callback, user_args=[filename])
+        return ur.AttrMap(button, None, focus_map='selection')
+
+    def selection(self, user_args, button):
+        res = ur.emit_signal(self, 'show_play', user_args)
+
+    def __init__(self):
+        playlist = []
+        for t, fn in Bard.playlist.items():
+            title = '{:<26}{:>6}'.format(t[0:-6], t[-6:])
+            filename = fn
+            playlist.append(PlayMenu.menu_button(title, filename, self.selection))
+
+        top_w = PlayMenu.menu('Plays of William Shakespeare', playlist)
+        bot_w = ur.SolidFill(' ')
+
+        super().__init__(top_w, bot_w, align = 'center', width = 36,
+                         valign = 'middle', height = 38,
+                         min_width = 38, min_height = 38,
+                         left = 5, right = 5, top = 5, bottom = 5)
+
+def palette():
+    return [('title','yellow, bold','default'),
+            ('stagedir','light green, bold','default'),
+            ('none','light red','default'),
+            ('speaker','light cyan', 'default'),
+            ('prologue','light cyan', 'default'),
+            ('epilogue','light cyan', 'default'),
+            ('search', 'light gray, bold', 'default' ),
+            ('line','default','default') ]
+
+
+if __name__ == '__main__':
+
+    def show_play(arg):
+        loop.widget = PlayReader(arg)
+        return True
+
+    def unhandled(key):
+        if key == 'q' :
+            raise ur.ExitMainLoop()
+        elif key == 'r':
+            loop.draw_screen()
+        elif key == 'esc':
+            loop.widget = main   #ur.emit_signal()
+
+    main = PlayMenu()
+    ur.register_signal(PlayMenu, ['show_play'])
+    ur.connect_signal(main, 'show_play', show_play)
+
+    loop = ur.MainLoop(main,
+                       palette = palette(),
+                       unhandled_input=unhandled,
+                       screen=ur.raw_display.Screen())
+
+    try:
+        show_play(sys.argv[1])
+    except FileNotFoundError:
+        sys.exit()
+    except IndexError:
+        pass
+
+    loop.run()
+
